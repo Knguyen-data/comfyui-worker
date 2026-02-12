@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 RunPod Handler for ComfyUI Worker
+Supports optional LoRA loading via lora_name/lora_weight/lora_url input params.
 """
 import os
 import sys
@@ -8,10 +9,13 @@ import json
 import time
 import asyncio
 import subprocess
+import tempfile
+import shutil
 from datetime import datetime
 
 # ComfyUI paths
 COMFYUI_PATH = "/home/comfyui"
+LORA_DIR = os.path.join(COMFYUI_PATH, "models", "loras")
 sys.path.insert(0, COMFYUI_PATH)
 
 # Global state
@@ -111,15 +115,117 @@ async def run_workflow(prompt: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def handler(event: dict) -> dict:
-    """Main handler for RunPod"""
+def download_lora(url: str, filename: str) -> str:
+    """Download a LoRA .safetensors file to ComfyUI's loras directory.
+    Skips if already cached. Uses atomic write (temp -> rename)."""
+    os.makedirs(LORA_DIR, exist_ok=True)
+    dest = os.path.join(LORA_DIR, filename)
+
+    if os.path.exists(dest):
+        print(f"LoRA already cached: {filename}")
+        return dest
+
+    print(f"Downloading LoRA: {url} -> {dest}")
+    import urllib.request
+
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=LORA_DIR, suffix=".tmp")
     try:
-        # Extract input
-        prompt = event.get("input", {})
+        os.close(tmp_fd)
+        urllib.request.urlretrieve(url, tmp_path)
+        shutil.move(tmp_path, dest)
+        print(f"LoRA downloaded: {filename} ({os.path.getsize(dest)} bytes)")
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise RuntimeError(f"LoRA download failed: {e}") from e
+
+    return dest
+
+
+def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) -> dict:
+    """Inject a LoraLoader node between the checkpoint and downstream nodes.
+    
+    Inserts node "20" (LoraLoader) that:
+    - Takes model+clip from checkpoint node "1"
+    - Rewires KSampler "10" and CLIP nodes "7"/"8" to use LoRA outputs
+    - If IPAdapter node "5" exists, rewires its model input too
+    """
+    prompt = dict(prompt)  # shallow copy
+
+    prompt["20"] = {
+        "class_type": "LoraLoader",
+        "inputs": {
+            "lora_name": lora_name,
+            "strength_model": lora_weight,
+            "strength_clip": lora_weight,
+            "model": ["1", 0],
+            "clip": ["1", 1],
+        },
+    }
+
+    # Rewire CLIP text encode nodes to use LoRA clip output
+    for nid in ("7", "8"):
+        if nid in prompt:
+            node = prompt[nid]
+            if isinstance(node, dict) and "inputs" in node:
+                inputs = node["inputs"]
+                if isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "1":
+                    inputs["clip"] = ["20", 1]
+                # Also check for "2" (separate CLIP loader)
+                elif isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "2":
+                    pass  # keep separate CLIP loader wiring
+
+    # Rewire KSampler model input
+    if "10" in prompt:
+        ks_inputs = prompt["10"].get("inputs", {})
+        model_ref = ks_inputs.get("model")
+        # Only rewire if it currently points to checkpoint "1"
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ks_inputs["model"] = ["20", 0]
+
+    # Rewire IPAdapter if present (node "5")
+    if "5" in prompt:
+        ipa_inputs = prompt["5"].get("inputs", {})
+        model_ref = ipa_inputs.get("model")
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ipa_inputs["model"] = ["20", 0]
+
+    return prompt
+
+
+async def handler(event: dict) -> dict:
+    """Main handler for RunPod.
+    
+    Accepts optional top-level input fields for LoRA:
+      - lora_name: filename of the .safetensors in models/loras/
+      - lora_weight: float (default 0.8)
+      - lora_url: URL to download the LoRA from (cached after first download)
+    """
+    try:
+        raw_input = event.get("input", {})
         
-        if not prompt:
-            return {"success": False, "error": "No prompt provided"}
-        
+        if not raw_input:
+            return {"success": False, "error": "No input provided"}
+
+        # Extract LoRA params (top-level, not inside the prompt)
+        lora_name = raw_input.pop("lora_name", None)
+        lora_weight = float(raw_input.pop("lora_weight", 0.8))
+        lora_url = raw_input.pop("lora_url", None)
+
+        # Download LoRA if URL provided
+        if lora_url and lora_name:
+            try:
+                download_lora(lora_url, lora_name)
+            except Exception as e:
+                return {"success": False, "error": f"LoRA download failed: {e}"}
+
+        # The remaining input is the workflow prompt
+        prompt = raw_input
+
+        # Inject LoRA node into workflow if requested
+        if lora_name:
+            prompt = inject_lora_into_prompt(prompt, lora_name, lora_weight)
+
         # Run workflow
         result = await run_workflow(prompt)
         return result
