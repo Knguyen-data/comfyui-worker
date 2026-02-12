@@ -82,8 +82,14 @@ async def run_workflow(prompt: dict) -> dict:
                 result = await resp.json()
                 prompt_id = result["prompt_id"]
         
-        # Poll for completion
+        # Poll for completion with timeout
+        poll_start = time.time()
+        poll_timeout = 600  # 10 minutes max
         while True:
+            # Check timeout
+            if time.time() - poll_start > poll_timeout:
+                return {"success": False, "error": "Polling timeout exceeded (600s)"}
+
             await asyncio.sleep(1)
             async with aiohttp.ClientSession() as session:
                 async with session.get(

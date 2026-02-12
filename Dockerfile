@@ -31,7 +31,11 @@ RUN pip install --no-cache-dir \
     scipy \
     pandas \
     matplotlib \
-    protobuf
+    protobuf \
+    aiohttp \
+    uvicorn \
+    fastapi \
+    pydantic
 
 # Install ComfyUI
 WORKDIR /home/comfyui
@@ -68,6 +72,15 @@ RUN echo "Downloading Lustify SDXL V7..." && \
 RUN echo "Downloading base SDXL model..." && \
     curl -L -o /home/comfyui/models/checkpoints/sd_xl_base_1.0.safetensors \
         "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
+
+# Download T5 XXL CLIP model (required for workflow.json node #2)
+# Note: t5xxl_fp16.safetensors may already be included with stable-diffusion-xl-base-1.0
+# but we download it explicitly to ensure availability
+RUN echo "Downloading T5 XXL CLIP model..." && \
+    mkdir -p /home/comfyui/models/clip && \
+    curl -L -o /home/comfyui/models/clip/t5xxl_fp16.safetensors \
+        "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/t5xxl_fp16.safetensors" || \
+    echo "T5 XXL may already be bundled with base model"
 
 # Copy custom nodes
 RUN mkdir -p /home/comfyui/custom_nodes && \
