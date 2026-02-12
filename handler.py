@@ -168,6 +168,77 @@ def collect_outputs(history):
     return images
 
 
+def upload_image_to_comfyui(image_b64, filename="input_face.png"):
+    """Upload a base64 image to ComfyUI's /upload/image endpoint.
+
+    Returns the filename as stored by ComfyUI (used in LoadImage node).
+    """
+    import io
+    import uuid
+
+    # Decode base64 to bytes
+    # Strip data URI prefix if present (e.g. "data:image/png;base64,...")
+    if "," in image_b64[:100]:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    image_bytes = base64.b64decode(image_b64)
+
+    # Generate unique filename to avoid collisions
+    ext = os.path.splitext(filename)[1] or ".png"
+    unique_name = f"input_{uuid.uuid4().hex[:8]}{ext}"
+
+    # Build multipart form data manually
+    boundary = f"----ComfyUIBoundary{uuid.uuid4().hex[:16]}"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="image"; filename="{unique_name}"\r\n'
+        f"Content-Type: image/png\r\n"
+        f"\r\n"
+    ).encode("utf-8") + image_bytes + (
+        f"\r\n--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        "http://127.0.0.1:8188/upload/image",
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=30)
+    result = json.loads(resp.read())
+
+    # ComfyUI returns {"name": "filename.png", "subfolder": "", "type": "input"}
+    uploaded_name = result.get("name", unique_name)
+    print(f"Uploaded image as: {uploaded_name}")
+    return uploaded_name
+
+
+def preprocess_images(prompt):
+    """Scan the prompt for LoadImage nodes with base64 data and upload them.
+
+    The frontend sends base64 image data in LoadImage nodes' "image" input.
+    ComfyUI expects a filename (from /upload/image). This function:
+    1. Finds LoadImage nodes with base64 data
+    2. Uploads them to ComfyUI
+    3. Replaces the base64 with the uploaded filename
+    """
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type", "")
+        if class_type == "LoadImage":
+            inputs = node.get("inputs", {})
+            image_val = inputs.get("image", "")
+            # If it looks like base64 data (long string, not a filename)
+            if isinstance(image_val, str) and len(image_val) > 200:
+                print(f"Node {node_id}: Uploading base64 image ({len(image_val)} chars)...")
+                uploaded_name = upload_image_to_comfyui(image_val)
+                inputs["image"] = uploaded_name
+                print(f"Node {node_id}: Replaced with filename '{uploaded_name}'")
+
+    return prompt
+
+
 def handler(event):
     """RunPod serverless handler."""
     try:
@@ -179,6 +250,9 @@ def handler(event):
 
         if not prompt:
             return {"error": "No prompt provided in input"}
+
+        # Pre-process: upload any base64 images to ComfyUI
+        prompt = preprocess_images(prompt)
 
         # Submit prompt
         prompt_id = queue_prompt(prompt)
