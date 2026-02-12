@@ -85,7 +85,7 @@ RUN echo "Downloading T5 XXL CLIP model..." && \
 # Copy custom nodes
 RUN mkdir -p /home/comfyui/custom_nodes && \
     git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git /home/comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
-    git clone https://github.com/latent-consistency/latent-consistency.git /home/comfyui/custom_nodes/latent-consistency
+    git clone https://github.com/luosiallen/latent-consistency-model.git /home/comfyui/custom_nodes/latent-consistency-model
 
 # Copy workflow and handler
 COPY --chmod=755 handler.py /home/comfyui/handler.py
