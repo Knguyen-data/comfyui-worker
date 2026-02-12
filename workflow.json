@@ -1,0 +1,244 @@
+{
+  "last_node_id": 28,
+  "last_link_id": 74,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckPointLoaderSDXL",
+      "pos": [139, 461],
+      "size": { "0": 317.4, "1": 98.2 },
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        { "name": "ckpt_name", "type": "STRING", "link": null, "widget_name": "ckpt_name", "default_value": "lustifySDXLNSFW_ggwpV7.safetensors" }
+      ],
+      "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [1], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CheckPointLoaderSDXL" },
+      "widgets_values": [ "lustifySDXLNSFW_ggwpV7.safetensors" ]
+    },
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [139, 223],
+      "size": { "0": 317.4, "1": 82.2 },
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        { "name": "clip_name", "type": "STRING", "link": null, "widget_name": "clip_name", "default_value": "t5xxl_fp16.safetensors" },
+        { "name": "type", "type": "STRING", "link": null, "widget_name": "type", "default_value": "sdxl" }
+      ],
+      "outputs": [ { "name": "CLIP", "type": "CLIP", "links": [2], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CLIPLoader" },
+      "widgets_values": [ "t5xxl_fp16.safetensors", "sdxl" ]
+    },
+    {
+      "id": 3,
+      "type": "CLIPVisionLoader",
+      "pos": [139, 58],
+      "size": { "0": 317.4, "1": 58.2 },
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        { "name": "clip_name", "type": "STRING", "link": null, "widget_name": "clip_name", "default_value": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors" }
+      ],
+      "outputs": [ { "name": "CLIP_VISION", "type": "CLIP_VISION", "links": [3], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CLIPVisionLoader" },
+      "widgets_values": [ "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors" ]
+    },
+    {
+      "id": 4,
+      "type": "IPAdapterModelLoader",
+      "pos": [461, 58],
+      "size": { "0": 317.4, "1": 58.2 },
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        { "name": "ipadapter_file", "type": "STRING", "link": null, "widget_name": "ipadapter_file", "default_value": "ip-adapter-faceid_sdxl.bin" }
+      ],
+      "outputs": [ { "name": "IPADAPTER", "type": "IPADAPTER", "links": [4], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "IPAdapterModelLoader" },
+      "widgets_values": [ "ip-adapter-faceid_sdxl.bin" ]
+    },
+    {
+      "id": 5,
+      "type": "IPAdapterAdvanced",
+      "pos": [461, 223],
+      "size": { "0": 317.4, "1": 222.6 },
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": 1, "slot_type": 0 },
+        { "name": "clip", "type": "CLIP", "link": 2, "slot_type": 0 },
+        { "name": "ipadapter", "type": "IPADAPTER", "link": 4, "slot_type": 0 },
+        { "name": "clip_vision", "type": "CLIP_VISION", "link": 3, "slot_type": 0 },
+        { "name": "image", "type": "IMAGE", "link": null, "slot_type": 0 },
+        { "name": "weight", "type": "FLOAT", "link": null, "widget_name": "weight", "default_value": 1.0 },
+        { "name": "weight_faceidv2", "type": "FLOAT", "link": null, "widget_name": "weight_faceidv2", "default_value": 1.0 },
+        { "name": "combine_embeds", "type": "COMBO", "link": null, "widget_name": "combine_embeds", "default_value": "Average" },
+        { "name": "embeds_scaling", "type": "COMBO", "link": null, "widget_name": "embeds_scaling", "default_value": "V only" }
+      ],
+      "outputs": [ { "name": "MODEL", "type": "MODEL", "links": [5], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "IPAdapterAdvanced" },
+      "widgets_values": [ 1.0, 1.0, "Average", "V only" ]
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [461, 558],
+      "size": { "0": 315, "1": 274 },
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [ { "name": "image", "type": "IMAGE", "link": null, "slot_type": 0 } ],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [6], "slot_type": 0 },
+        { "name": "MASK", "type": "MASK", "links": null, "slot_type": 0 }
+      ],
+      "properties": { "Node name for_Scripting": "LoadImage" }
+    },
+    {
+      "id": 7,
+      "type": "CLIPTextEncodeSDXL",
+      "pos": [783, 89],
+      "size": { "0": 317.4, "1": 186.2 },
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        { "name": "clip", "type": "CLIP", "link": null, "slot_type": 0 },
+        "text",
+        "token_normalization",
+        "end_at_step"
+      ],
+      "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": [7, 8], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CLIPTextEncodeSDXL" },
+      "widgets_values": [ "", "none", 1000 ]
+    },
+    {
+      "id": 8,
+      "type": "CLIPTextEncodeSDXL",
+      "pos": [783, 89],
+      "size": { "0": 317.4, "1": 186.2 },
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        { "name": "clip", "type": "CLIP", "link": null, "slot_type": 0 },
+        "text_g",
+        "token_normalization",
+        "end_at_step"
+      ],
+      "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": null, "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CLIPTextEncodeSDXL" },
+      "widgets_values": [ "", "none", 1000 ]
+    },
+    {
+      "id": 9,
+      "type": "CLIPTextEncode",
+      "pos": [783, 89],
+      "size": { "0": 317.4, "1": 138.2 },
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        { "name": "clip", "type": "CLIP", "link": null, "slot_type": 0 },
+        { "name": "text", "type": "STRING", "link": null, "widget_name": "text", "default_value": "beautiful scenery nature" }
+      ],
+      "outputs": [ { "name": "CONDITIONING", "type": "CONDITIONING", "links": null, "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "CLIPTextEncode" },
+      "widgets_values": [ "beautiful scenery nature" ]
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [783, 462],
+      "size": { "0": 317.4, "1": 222.6 },
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": 5, "slot_type": 0 },
+        { "name": "positive", "type": "CONDITIONING", "link": 7, "slot_type": 0 },
+        { "name": "negative", "type": "CONDITIONING", "link": null, "slot_type": 0 },
+        { "name": "latent_image", "type": "LATENT", "link": null, "slot_type": 0 },
+        { "name": "seed", "type": "INT", "link": null, "widget_name": "seed", "default_value": 0 },
+        { "name": "steps", "type": "INT", "link": null, "widget_name": "steps", "default_value": 20 },
+        { "name": "cfg", "type": "FLOAT", "link": null, "widget_name": "cfg", "default_value": 8.0 },
+        { "name": "sampler_name", "type": "COMBO", "link": null, "widget_name": "sampler_name", "default_value": "euler" },
+        { "name": "scheduler", "type": "COMBO", "link": null, "widget_name": "scheduler", "default_value": "normal" },
+        { "name": "denoise", "type": "FLOAT", "link": null, "widget_name": "denoise", "default_value": 1.0 }
+      ],
+      "outputs": [ { "name": "LATENT", "type": "LATENT", "links": [10], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "KSampler" },
+      "widgets_values": [ 123456789, 20, 8.0, "euler", "normal", 1.0 ]
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [1119, 462],
+      "size": { "0": 210.6, "1": 58.2 },
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        { "name": "samples", "type": "LATENT", "link": 10, "slot_type": 0 },
+        { "name": "vae", "type": "VAE", "link": null, "slot_type": 0 }
+      ],
+      "outputs": [ { "name": "IMAGE", "type": "IMAGE", "links": [11], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "VAEDecode" }
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [1349, 462],
+      "size": { "0": 315, "1": 58.2 },
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        { "name": "images", "type": "IMAGE", "link": 11, "slot_type": 0 }
+      ],
+      "outputs": [],
+      "properties": { "Node name for_Scripting": "SaveImage" },
+      "widgets_values": [ "ComfyUI" ]
+    },
+    {
+      "id": 13,
+      "type": "EmptySDXLLatentImage",
+      "pos": [557, 462],
+      "size": { "0": 317.4, "1": 106.2 },
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        { "name": "width", "type": "INT", "link": null, "widget_name": "width", "default_value": 1024 },
+        { "name": "height", "type": "INT", "link": null, "widget_name": "height", "default_value": 1024 },
+        { "name": "batch_size", "type": "INT", "link": null, "widget_name": "batch_size", "default_value": 1 }
+      ],
+      "outputs": [ { "name": "LATENT", "type": "LATENT", "links": [12], "slot_type": 0 } ],
+      "properties": { "Node name for_Scripting": "EmptySDXLLatentImage" },
+      "widgets_values": [ 1024, 1024, 1 ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 5, 0, "MODEL"],
+    [2, 2, 0, 5, 1, "CLIP"],
+    [3, 3, 0, 5, 2, "CLIP_VISION"],
+    [4, 4, 0, 5, 3, "IPADAPTER"],
+    [5, 5, 0, 10, 0, "MODEL"],
+    [6, 6, 0, 5, 4, "IMAGE"],
+    [7, 7, 0, 10, 1, "CONDITIONING"],
+    [10, 10, 0, 11, 0, "LATENT"],
+    [11, 11, 0, 12, 0, "IMAGE"],
+    [12, 13, 0, 10, 3, "LATENT"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": { "ds": { "scale": 1.0, "offset": [0, 0] } },
+  "version": 0.4
+}
