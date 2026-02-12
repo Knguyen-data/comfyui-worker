@@ -36,7 +36,6 @@ RUN pip install --no-cache-dir \
 # Install ComfyUI
 WORKDIR /home/comfyui
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git . && \
-    git checkout 2afe68c && \
     pip install -r requirements.txt
 
 # Create models directories
@@ -46,9 +45,8 @@ RUN mkdir -p /home/comfyui/models/checkpoints \
              /home/comfyui/models/ipadapter \
              /home/comfyui/models/clip_vision
 
-# Download IPAdapter models
+# Download IPAdapter models (ARG only, not exposed as ENV)
 ARG CIVITAI_TOKEN
-ENV CIVITAI_TOKEN=${CIVITAI_TOKEN}
 
 RUN echo "Downloading IPAdapter FaceID..." && \
     curl -L -o /home/comfyui/models/ipadapter/ip-adapter-faceid_sdxl.bin \
