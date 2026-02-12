@@ -13,6 +13,8 @@ import tempfile
 import shutil
 from datetime import datetime
 
+import runpod
+
 # ComfyUI paths
 COMFYUI_PATH = "/home/comfyui"
 LORA_DIR = os.path.join(COMFYUI_PATH, "models", "loras")
@@ -235,32 +237,39 @@ async def handler(event: dict) -> dict:
 
 
 if __name__ == "__main__":
-    # For local testing
-    import uvicorn
-    from fastapi import FastAPI, Request
-    from fastapi.middleware.cors import CORSMiddleware
-    from pydantic import BaseModel
+    import sys
     
-    app = FastAPI()
-    
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    class InputModel(BaseModel):
-        prompt: dict
-    
-    @app.post("/runsync")
-    async def run_sync(input_data: InputModel):
-        result = await handler({"input": input_data.dict()})
-        return result
-    
-    @app.get("/health")
-    async def health():
-        return {"status": "ok", "initialized": initialized}
-    
-    print("Starting local server on port 8000...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    if "--local" in sys.argv:
+        # For local testing with FastAPI
+        import uvicorn
+        from fastapi import FastAPI, Request
+        from fastapi.middleware.cors import CORSMiddleware
+        from pydantic import BaseModel
+        
+        app = FastAPI()
+        
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        
+        class InputModel(BaseModel):
+            prompt: dict
+        
+        @app.post("/runsync")
+        async def run_sync(input_data: InputModel):
+            result = await handler({"input": input_data.dict()})
+            return result
+        
+        @app.get("/health")
+        async def health():
+            return {"status": "ok", "initialized": initialized}
+        
+        print("Starting local server on port 8000...")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    else:
+        # RunPod serverless production entrypoint
+        print("Starting RunPod serverless handler...")
+        runpod.serverless.start({"handler": handler})

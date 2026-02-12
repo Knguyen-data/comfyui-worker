@@ -33,9 +33,7 @@ RUN pip install --no-cache-dir \
     matplotlib \
     protobuf \
     aiohttp \
-    uvicorn \
-    fastapi \
-    pydantic
+    runpod
 
 # Install ComfyUI
 WORKDIR /home/comfyui
@@ -68,28 +66,18 @@ RUN echo "Downloading Lustify SDXL V7..." && \
     curl -L -o /home/comfyui/models/checkpoints/lustifySDXLNSFW_ggwpV7.safetensors \
         "https://civitai.com/api/download/models/${LUSTIFY_MODEL_ID}?token=715db9acbf5c71d8c82fc7cfc8ce2529"
 
-# Download base SDXL model
-RUN echo "Downloading base SDXL model..." && \
-    curl -L -o /home/comfyui/models/checkpoints/sd_xl_base_1.0.safetensors \
-        "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors"
-
-# Download T5 XXL CLIP model (required for workflow.json node #2)
-# Note: t5xxl_fp16.safetensors may already be included with stable-diffusion-xl-base-1.0
-# but we download it explicitly to ensure availability
-RUN echo "Downloading T5 XXL CLIP model..." && \
-    mkdir -p /home/comfyui/models/clip && \
-    curl -L -o /home/comfyui/models/clip/t5xxl_fp16.safetensors \
-        "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/t5xxl_fp16.safetensors" || \
-    echo "T5 XXL may already be bundled with base model"
-
-# Copy custom nodes
-RUN mkdir -p /home/comfyui/custom_nodes && \
-    git clone https://github.com/cubiq/ComfyUI_IPAdapter_plus.git /home/comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
-    git clone https://github.com/luosiallen/latent-consistency-model.git /home/comfyui/custom_nodes/latent-consistency-model
+# Install custom nodes (only IPAdapter Plus needed for this workflow)
+# Clean any broken custom nodes first
+RUN rm -rf /home/comfyui/custom_nodes/* && \
+    mkdir -p /home/comfyui/custom_nodes && \
+    git clone --depth 1 https://github.com/cubiq/ComfyUI_IPAdapter_plus.git /home/comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
+    cd /home/comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
+    pip install --no-cache-dir -r requirements.txt || true && \
+    cd /home/comfyui
 
 # Copy workflow and handler
-COPY --chmod=755 handler.py /home/comfyui/handler.py
-COPY --chmod=755 workflow.json /home/comfyui/workflow.json
+COPY handler.py /home/comfyui/handler.py
+COPY workflow.json /home/comfyui/workflow.json
 
 WORKDIR /home/comfyui
 
@@ -100,5 +88,5 @@ EXPOSE 8188
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8188')" || exit 1
 
-# Start ComfyUI
-CMD ["python", "main.py", "--disable-auto-launch", "--disable-metadata"]
+# Start RunPod handler (starts ComfyUI internally)
+CMD ["python", "-u", "handler.py"]
