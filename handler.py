@@ -23,13 +23,17 @@ sys.path.insert(0, COMFYUI_PATH)
 # Global state
 comfyui_process = None
 initialized = False
+_init_lock = asyncio.Lock()
 
 
 async def start_comfyui():
     """Start ComfyUI server"""
     global comfyui_process, initialized
     
-    if not initialized:
+    async with _init_lock:
+        if initialized:
+            return True
+    
         print("Starting ComfyUI server...")
         comfyui_process = await asyncio.create_subprocess_exec(
             sys.executable, "main.py",
@@ -37,8 +41,8 @@ async def start_comfyui():
             "--disable-metadata",
             "--port", "8188",
             cwd=COMFYUI_PATH,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stdout=None,
+            stderr=None
         )
         
         # Wait for server to be ready
@@ -70,7 +74,8 @@ async def run_workflow(prompt: dict) -> dict:
     global comfyui_process
     
     if not initialized:
-        await start_comfyui()
+        if not await start_comfyui():
+            return {"success": False, "error": "ComfyUI failed to start"}
     
     try:
         import aiohttp
@@ -144,154 +149,68 @@ def download_lora(url: str, filename: str) -> str:
     return dest
 
 
-def process_base64_images(prompt: dict) -> dict:
-    """Find LoadImage nodes with base64 data, save to ComfyUI input dir, replace with filename."""
-    import base64
-    input_dir = os.path.join(COMFYUI_PATH, "input")
-    os.makedirs(input_dir, exist_ok=True)
-
-    for node_id, node in prompt.items():
-        if not isinstance(node, dict):
-            continue
-        if node.get("class_type") != "LoadImage":
-            continue
-
-        inputs = node.get("inputs", {})
-        image_data = inputs.get("image", "")
-
-        # Skip if already a filename (not base64 and not a URL)
-        if not image_data or len(image_data) < 200:
-            continue
-
-        # Handle URL-based images (uploaded to storage first)
-        if image_data.startswith("http://") or image_data.startswith("https://"):
-            filename = f"ref_{node_id}_{int(time.time())}.jpg"
-            filepath = os.path.join(input_dir, filename)
-            try:
-                import httpx
-                with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-                    resp = client.get(image_data)
-                    resp.raise_for_status()
-                    with open(filepath, "wb") as f:
-                        f.write(resp.content)
-                print(f"Downloaded ref image for node {node_id}: {filename} ({os.path.getsize(filepath)} bytes)")
-                inputs["image"] = filename
-            except Exception as e:
-                print(f"Failed to download image for node {node_id}: {e}")
-            continue
-
-        # Strip data URL prefix if present
-        raw_b64 = image_data
-        if "," in raw_b64:
-            raw_b64 = raw_b64.split(",", 1)[1]
-
-        # Detect mime type from header
-        ext = "png"
-        if image_data.startswith("data:image/jpeg"):
-            ext = "jpg"
-        elif image_data.startswith("data:image/webp"):
-            ext = "webp"
-
-        filename = f"ref_{node_id}_{int(time.time())}.{ext}"
-        filepath = os.path.join(input_dir, filename)
-
-        try:
-            with open(filepath, "wb") as f:
-                f.write(base64.b64decode(raw_b64))
-            print(f"Saved base64 image for node {node_id}: {filename} ({os.path.getsize(filepath)} bytes)")
-            inputs["image"] = filename
-        except Exception as e:
-            print(f"Failed to decode base64 for node {node_id}: {e}")
-
-    return prompt
-
-
 def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) -> dict:
     """Inject a LoraLoader node between the checkpoint and downstream nodes.
-
+    
     Inserts node "20" (LoraLoader) that:
-    - Takes model+clip from checkpoint node (CheckpointLoaderSimple)
-    - Rewires KSampler and CLIP nodes to use LoRA outputs
-    - If IPAdapter node exists, rewires its model input too
+    - Takes model+clip from checkpoint node "1"
+    - Rewires KSampler "10" and CLIP nodes "7"/"8" to use LoRA outputs
+    - If IPAdapter node "5" exists, rewires its model input too
     """
     prompt = dict(prompt)  # shallow copy
 
-    # 1. Find the CheckpointLoaderSimple node
-    checkpoint_node_id = None
-    for nid, node in prompt.items():
-        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple":
-            checkpoint_node_id = nid
-            break
-
-    if not checkpoint_node_id:
-        print("WARNING: No CheckpointLoaderSimple found. Skipping LoRA injection.")
-        return prompt
-
-    print(f"Injecting LoRA '{lora_name}' after checkpoint node {checkpoint_node_id}")
-
-    # 2. Create LoraLoader node
     prompt["20"] = {
         "class_type": "LoraLoader",
         "inputs": {
             "lora_name": lora_name,
             "strength_model": lora_weight,
             "strength_clip": lora_weight,
-            "model": [checkpoint_node_id, 0],
-            "clip": [checkpoint_node_id, 1],
+            "model": ["1", 0],
+            "clip": ["1", 1],
         },
     }
 
-    # 3. Rewire CLIP text encode nodes to use LoRA clip output
-    for nid, node in prompt.items():
-        if not isinstance(node, dict) or "class_type" not in node:
-            continue
-
-        if node["class_type"] in ("CLIPTextEncode", "CLIPTextEncodeSDXL"):
-            inputs = node.get("inputs", {})
-            # If currently using the original checkpoint, switch to LoRA
-            if "clip" in inputs and isinstance(inputs["clip"], list):
-                if inputs["clip"][0] == checkpoint_node_id:
+    # Rewire CLIP text encode nodes to use LoRA clip output
+    for nid in ("7", "8"):
+        if nid in prompt:
+            node = prompt[nid]
+            if isinstance(node, dict) and "inputs" in node:
+                inputs = node["inputs"]
+                if isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "1":
                     inputs["clip"] = ["20", 1]
+                # Also check for "2" (separate CLIP loader)
+                elif isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "2":
+                    pass  # keep separate CLIP loader wiring
 
-    # 4. Rewire KSampler model input
-    for nid, node in prompt.items():
-        if not isinstance(node, dict) or "class_type" not in node:
-            continue
+    # Rewire KSampler model input
+    if "10" in prompt:
+        ks_inputs = prompt["10"].get("inputs", {})
+        model_ref = ks_inputs.get("model")
+        # Only rewire if it currently points to checkpoint "1"
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ks_inputs["model"] = ["20", 0]
 
-        if node["class_type"] == "KSampler":
-            inputs = node.get("inputs", {})
-            if "model" in inputs and isinstance(inputs["model"], list):
-                if inputs["model"][0] == checkpoint_node_id:
-                    inputs["model"] = ["20", 0]
-
-    # 5. Rewire IPAdapter if present
-    for nid, node in prompt.items():
-        if not isinstance(node, dict) or "class_type" not in node:
-            continue
-
-        if node["class_type"] == "IPAdapter":
-            inputs = node.get("inputs", {})
-            if "model" in inputs and isinstance(inputs["model"], list):
-                if inputs["model"][0] == checkpoint_node_id:
-                    inputs["model"] = ["20", 0]
+    # Rewire IPAdapter if present (node "5")
+    if "5" in prompt:
+        ipa_inputs = prompt["5"].get("inputs", {})
+        model_ref = ipa_inputs.get("model")
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ipa_inputs["model"] = ["20", 0]
 
     return prompt
 
 
 async def handler(event: dict) -> dict:
     """Main handler for RunPod.
-
+    
     Accepts optional top-level input fields for LoRA:
       - lora_name: filename of the .safetensors in models/loras/
       - lora_weight: float (default 0.8)
       - lora_url: URL to download the LoRA from (cached after first download)
-
-    Base64 images in LoadImage nodes are automatically saved to ComfyUI's
-    input directory and replaced with filenames.
     """
     try:
         raw_input = event.get("input", {})
-
+        
         if not raw_input:
             return {"success": False, "error": "No input provided"}
 
@@ -310,9 +229,6 @@ async def handler(event: dict) -> dict:
         # The remaining input is the workflow prompt
         prompt = raw_input
 
-        # Process base64 images in LoadImage nodes
-        prompt = process_base64_images(prompt)
-
         # Inject LoRA node into workflow if requested
         if lora_name:
             prompt = inject_lora_into_prompt(prompt, lora_name, lora_weight)
@@ -320,7 +236,7 @@ async def handler(event: dict) -> dict:
         # Run workflow
         result = await run_workflow(prompt)
         return result
-
+        
     except Exception as e:
         return {"success": False, "error": str(e)}
 
