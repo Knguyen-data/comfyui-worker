@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir \
     matplotlib \
     protobuf \
     aiohttp \
+    httpx \
     runpod
 
 # Install ComfyUI
