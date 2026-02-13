@@ -48,7 +48,8 @@ RUN mkdir -p /home/comfyui/models/checkpoints \
              /home/comfyui/models/loras \
              /home/comfyui/models/upscale_models \
              /home/comfyui/models/ipadapter \
-             /home/comfyui/models/clip_vision
+             /home/comfyui/models/clip_vision \
+             /home/comfyui/models/insightface
 
 # Download IPAdapter models (ARG only, not exposed as ENV)
 ENV CIVITAI_TOKEN=715db9acbf5c71d8c82fc7cfc8ce2529
