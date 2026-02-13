@@ -34,6 +34,8 @@ RUN pip install --no-cache-dir \
     protobuf \
     aiohttp \
     httpx \
+    insightface \
+    onnxruntime-gpu \
     runpod
 
 # Install ComfyUI
