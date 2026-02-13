@@ -1,282 +1,343 @@
 #!/usr/bin/env python3
 """
-RunPod Serverless Handler for ComfyUI Worker
+RunPod Handler for ComfyUI Worker
+Supports optional LoRA loading via lora_name/lora_weight/lora_url input params.
 """
 import os
 import sys
 import json
 import time
-import base64
+import asyncio
 import subprocess
-import urllib.request
-import urllib.error
+import tempfile
+import shutil
+from datetime import datetime
 
 import runpod
 
 # ComfyUI paths
 COMFYUI_PATH = "/home/comfyui"
-COMFYUI_OUTPUT = os.path.join(COMFYUI_PATH, "output")
-COMFYUI_LOG = "/tmp/comfyui.log"
+LORA_DIR = os.path.join(COMFYUI_PATH, "models", "loras")
+sys.path.insert(0, COMFYUI_PATH)
 
 # Global state
 comfyui_process = None
-_log_file = None
+initialized = False
 
 
-def start_comfyui():
-    """Start ComfyUI server as a subprocess.
-
-    Redirects stdout/stderr to a log file to prevent pipe buffer deadlock.
-    Previously used subprocess.PIPE without draining, which caused ComfyUI
-    to block on write when the 64KB OS pipe buffer filled up.
-    """
-    global comfyui_process, _log_file
-
-    if comfyui_process is not None:
-        # Check if the existing process is still alive
-        if comfyui_process.poll() is None:
-            return
-        # Process died — restart it
-        print(f"ComfyUI process died with exit code {comfyui_process.returncode}, restarting...")
-        comfyui_process = None
-        if _log_file:
-            _log_file.close()
-            _log_file = None
-
-    print("Starting ComfyUI server...")
-
-    # Redirect to a log file instead of PIPE to avoid pipe buffer deadlock.
-    # The log file never fills up / blocks the subprocess.
-    _log_file = open(COMFYUI_LOG, "w")
-
-    comfyui_process = subprocess.Popen(
-        [sys.executable, "main.py", "--disable-auto-launch", "--disable-metadata", "--port", "8188"],
-        cwd=COMFYUI_PATH,
-        stdout=_log_file,
-        stderr=subprocess.STDOUT,
-    )
-
-    # Wait for server to be ready
-    max_wait = 120
-    for i in range(max_wait):
-        # Check if the process crashed during startup
-        if comfyui_process.poll() is not None:
-            # Process exited — dump tail of log for diagnostics
-            _log_file.flush()
+async def start_comfyui():
+    """Start ComfyUI server"""
+    global comfyui_process, initialized
+    
+    if not initialized:
+        print("Starting ComfyUI server...")
+        comfyui_process = await asyncio.create_subprocess_exec(
+            sys.executable, "main.py",
+            "--disable-auto-launch",
+            "--disable-metadata",
+            "--port", "8188",
+            cwd=COMFYUI_PATH,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Wait for server to be ready
+        max_wait = 120
+        wait_time = 0
+        while wait_time < max_wait:
             try:
-                with open(COMFYUI_LOG, "r") as lf:
-                    log_tail = lf.read()[-2000:]
-            except Exception:
-                log_tail = "(could not read log)"
-            raise RuntimeError(
-                f"ComfyUI process exited with code {comfyui_process.returncode} during startup.\n"
-                f"Log tail:\n{log_tail}"
-            )
-
-        try:
-            req = urllib.request.urlopen("http://127.0.0.1:8188/system_stats", timeout=2)
-            if req.status == 200:
-                print(f"ComfyUI server ready after {i+1}s")
-                return
-        except (urllib.error.URLError, ConnectionRefusedError, OSError):
-            pass
-        time.sleep(1)
-        if i % 10 == 0:
-            print(f"Waiting for ComfyUI... ({i}s)")
-
-    raise RuntimeError("ComfyUI failed to start within 120s")
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get("http://127.0.0.1:8188", timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                        if resp.status == 200:
+                            print("ComfyUI server ready!")
+                            initialized = True
+                            return True
+            except:
+                pass
+            await asyncio.sleep(1)
+            wait_time += 1
+            print(f"Waiting for ComfyUI... ({wait_time}s)")
+        
+        print("Failed to start ComfyUI within timeout")
+        return False
+    
+    return True
 
 
-def queue_prompt(prompt):
-    """Submit a prompt to ComfyUI and return prompt_id."""
-    data = json.dumps({"prompt": prompt}).encode("utf-8")
-    req = urllib.request.Request(
-        "http://127.0.0.1:8188/prompt",
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-    return result["prompt_id"]
+async def run_workflow(prompt: dict) -> dict:
+    """Execute a ComfyUI workflow"""
+    global comfyui_process
+    
+    if not initialized:
+        await start_comfyui()
+    
+    try:
+        import aiohttp
+        
+        # Submit workflow
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://127.0.0.1:8188/api/prompt",
+                json={"prompt": prompt},
+                timeout=aiohttp.ClientTimeout(total=300)
+            ) as resp:
+                if resp.status != 200:
+                    error = await resp.text()
+                    raise Exception(f"API error: {error}")
+                result = await resp.json()
+                prompt_id = result["prompt_id"]
+        
+        # Poll for completion with timeout
+        poll_start = time.time()
+        poll_timeout = 600  # 10 minutes max
+        while True:
+            # Check timeout
+            if time.time() - poll_start > poll_timeout:
+                return {"success": False, "error": "Polling timeout exceeded (600s)"}
+
+            await asyncio.sleep(1)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:8188/api/prompt_status/{prompt_id}",
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        status = await resp.json()
+                        if status["status"] == "success":
+                            outputs = status["outputs"]
+                            return {"success": True, "outputs": outputs}
+                        elif status["status"] == "failed":
+                            error_msg = status.get("error", "Unknown error")
+                            return {"success": False, "error": error_msg}
+                    elif resp.status != 404:
+                        raise Exception(f"Status check failed: {resp.status}")
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
-def poll_history(prompt_id, timeout=600):
-    """Poll ComfyUI history endpoint until the prompt completes.
+def download_lora(url: str, filename: str) -> str:
+    """Download a LoRA .safetensors file to ComfyUI's loras directory.
+    Skips if already cached. Uses atomic write (temp -> rename)."""
+    os.makedirs(LORA_DIR, exist_ok=True)
+    dest = os.path.join(LORA_DIR, filename)
 
-    Also checks whether the ComfyUI process is still alive — if it crashed,
-    we fail fast instead of waiting the full timeout.
-    """
-    start = time.time()
-    poll_count = 0
-    while time.time() - start < timeout:
-        # Check if ComfyUI process crashed
-        if comfyui_process is not None and comfyui_process.poll() is not None:
-            elapsed = time.time() - start
-            try:
-                with open(COMFYUI_LOG, "r") as lf:
-                    log_tail = lf.read()[-2000:]
-            except Exception:
-                log_tail = "(could not read log)"
-            raise RuntimeError(
-                f"ComfyUI process died (exit code {comfyui_process.returncode}) "
-                f"while waiting for prompt {prompt_id} after {elapsed:.0f}s.\n"
-                f"Log tail:\n{log_tail}"
-            )
+    if os.path.exists(dest):
+        print(f"LoRA already cached: {filename}")
+        return dest
 
-        try:
-            resp = urllib.request.urlopen(
-                f"http://127.0.0.1:8188/history/{prompt_id}", timeout=10
-            )
-            history = json.loads(resp.read())
-            if prompt_id in history:
-                elapsed = time.time() - start
-                print(f"Prompt {prompt_id} completed after {elapsed:.1f}s")
-                return history[prompt_id]
-        except (urllib.error.URLError, OSError):
-            pass
+    print(f"Downloading LoRA: {url} -> {dest}")
+    import urllib.request
 
-        poll_count += 1
-        if poll_count % 30 == 0:
-            elapsed = time.time() - start
-            print(f"Still waiting for prompt {prompt_id}... ({elapsed:.0f}s elapsed)")
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=LORA_DIR, suffix=".tmp")
+    try:
+        os.close(tmp_fd)
+        urllib.request.urlretrieve(url, tmp_path)
+        shutil.move(tmp_path, dest)
+        print(f"LoRA downloaded: {filename} ({os.path.getsize(dest)} bytes)")
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise RuntimeError(f"LoRA download failed: {e}") from e
 
-        time.sleep(1)
-
-    raise TimeoutError(f"Prompt {prompt_id} did not complete within {timeout}s")
+    return dest
 
 
-def collect_outputs(history):
-    """Extract output images from ComfyUI history as base64."""
-    images = []
-    outputs = history.get("outputs", {})
+def process_base64_images(prompt: dict) -> dict:
+    """Find LoadImage nodes with base64 data, save to ComfyUI input dir, replace with filename."""
+    import base64
+    input_dir = os.path.join(COMFYUI_PATH, "input")
+    os.makedirs(input_dir, exist_ok=True)
 
-    for node_id, node_output in outputs.items():
-        if "images" in node_output:
-            for img_info in node_output["images"]:
-                filename = img_info.get("filename", "")
-                subfolder = img_info.get("subfolder", "")
-                img_path = os.path.join(COMFYUI_OUTPUT, subfolder, filename)
-                if os.path.isfile(img_path):
-                    with open(img_path, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode("utf-8")
-                    images.append({
-                        "filename": filename,
-                        "data": b64,
-                        "type": "image/png",
-                    })
-
-    return images
-
-
-def upload_image_to_comfyui(image_b64, filename="input_face.png"):
-    """Upload a base64 image to ComfyUI's /upload/image endpoint.
-
-    Returns the filename as stored by ComfyUI (used in LoadImage node).
-    """
-    import io
-    import uuid
-
-    # Decode base64 to bytes
-    # Strip data URI prefix if present (e.g. "data:image/png;base64,...")
-    if "," in image_b64[:100]:
-        image_b64 = image_b64.split(",", 1)[1]
-
-    image_bytes = base64.b64decode(image_b64)
-
-    # Generate unique filename to avoid collisions
-    ext = os.path.splitext(filename)[1] or ".png"
-    unique_name = f"input_{uuid.uuid4().hex[:8]}{ext}"
-
-    # Build multipart form data manually
-    boundary = f"----ComfyUIBoundary{uuid.uuid4().hex[:16]}"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="{unique_name}"\r\n'
-        f"Content-Type: image/png\r\n"
-        f"\r\n"
-    ).encode("utf-8") + image_bytes + (
-        f"\r\n--{boundary}--\r\n"
-    ).encode("utf-8")
-
-    req = urllib.request.Request(
-        "http://127.0.0.1:8188/upload/image",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    result = json.loads(resp.read())
-
-    # ComfyUI returns {"name": "filename.png", "subfolder": "", "type": "input"}
-    uploaded_name = result.get("name", unique_name)
-    print(f"Uploaded image as: {uploaded_name}")
-    return uploaded_name
-
-
-def preprocess_images(prompt):
-    """Scan the prompt for LoadImage nodes with base64 data and upload them.
-
-    The frontend sends base64 image data in LoadImage nodes' "image" input.
-    ComfyUI expects a filename (from /upload/image). This function:
-    1. Finds LoadImage nodes with base64 data
-    2. Uploads them to ComfyUI
-    3. Replaces the base64 with the uploaded filename
-    """
     for node_id, node in prompt.items():
         if not isinstance(node, dict):
             continue
-        class_type = node.get("class_type", "")
-        if class_type == "LoadImage":
-            inputs = node.get("inputs", {})
-            image_val = inputs.get("image", "")
-            # If it looks like base64 data (long string, not a filename)
-            if isinstance(image_val, str) and len(image_val) > 200:
-                print(f"Node {node_id}: Uploading base64 image ({len(image_val)} chars)...")
-                uploaded_name = upload_image_to_comfyui(image_val)
-                inputs["image"] = uploaded_name
-                print(f"Node {node_id}: Replaced with filename '{uploaded_name}'")
+        if node.get("class_type") != "LoadImage":
+            continue
+
+        inputs = node.get("inputs", {})
+        image_data = inputs.get("image", "")
+
+        # Skip if already a filename (not base64 and not a URL)
+        if not image_data or len(image_data) < 200:
+            continue
+
+        # Handle URL-based images (uploaded to storage first)
+        if image_data.startswith("http://") or image_data.startswith("https://"):
+            filename = f"ref_{node_id}_{int(time.time())}.jpg"
+            filepath = os.path.join(input_dir, filename)
+            try:
+                import httpx
+                with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                    resp = client.get(image_data)
+                    resp.raise_for_status()
+                    with open(filepath, "wb") as f:
+                        f.write(resp.content)
+                print(f"Downloaded ref image for node {node_id}: {filename} ({os.path.getsize(filepath)} bytes)")
+                inputs["image"] = filename
+            except Exception as e:
+                print(f"Failed to download image for node {node_id}: {e}")
+            continue
+
+        # Strip data URL prefix if present
+        raw_b64 = image_data
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+
+        # Detect mime type from header
+        ext = "png"
+        if image_data.startswith("data:image/jpeg"):
+            ext = "jpg"
+        elif image_data.startswith("data:image/webp"):
+            ext = "webp"
+
+        filename = f"ref_{node_id}_{int(time.time())}.{ext}"
+        filepath = os.path.join(input_dir, filename)
+
+        try:
+            with open(filepath, "wb") as f:
+                f.write(base64.b64decode(raw_b64))
+            print(f"Saved base64 image for node {node_id}: {filename} ({os.path.getsize(filepath)} bytes)")
+            inputs["image"] = filename
+        except Exception as e:
+            print(f"Failed to decode base64 for node {node_id}: {e}")
 
     return prompt
 
 
-def handler(event):
-    """RunPod serverless handler."""
+def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) -> dict:
+    """Inject a LoraLoader node between the checkpoint and downstream nodes.
+    
+    Inserts node "20" (LoraLoader) that:
+    - Takes model+clip from checkpoint node "1"
+    - Rewires KSampler "10" and CLIP nodes "7"/"8" to use LoRA outputs
+    - If IPAdapter node "5" exists, rewires its model input too
+    """
+    prompt = dict(prompt)  # shallow copy
+
+    prompt["20"] = {
+        "class_type": "LoraLoader",
+        "inputs": {
+            "lora_name": lora_name,
+            "strength_model": lora_weight,
+            "strength_clip": lora_weight,
+            "model": ["1", 0],
+            "clip": ["1", 1],
+        },
+    }
+
+    # Rewire CLIP text encode nodes to use LoRA clip output
+    for nid in ("7", "8"):
+        if nid in prompt:
+            node = prompt[nid]
+            if isinstance(node, dict) and "inputs" in node:
+                inputs = node["inputs"]
+                if isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "1":
+                    inputs["clip"] = ["20", 1]
+                # Also check for "2" (separate CLIP loader)
+                elif isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "2":
+                    pass  # keep separate CLIP loader wiring
+
+    # Rewire KSampler model input
+    if "10" in prompt:
+        ks_inputs = prompt["10"].get("inputs", {})
+        model_ref = ks_inputs.get("model")
+        # Only rewire if it currently points to checkpoint "1"
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ks_inputs["model"] = ["20", 0]
+
+    # Rewire IPAdapter if present (node "5")
+    if "5" in prompt:
+        ipa_inputs = prompt["5"].get("inputs", {})
+        model_ref = ipa_inputs.get("model")
+        if isinstance(model_ref, list) and model_ref[0] == "1":
+            ipa_inputs["model"] = ["20", 0]
+
+    return prompt
+
+
+async def handler(event: dict) -> dict:
+    """Main handler for RunPod.
+
+    Accepts optional top-level input fields for LoRA:
+      - lora_name: filename of the .safetensors in models/loras/
+      - lora_weight: float (default 0.8)
+      - lora_url: URL to download the LoRA from (cached after first download)
+
+    Base64 images in LoadImage nodes are automatically saved to ComfyUI's
+    input directory and replaced with filenames.
+    """
     try:
-        start_comfyui()
+        raw_input = event.get("input", {})
 
-        # RunPod delivers event["input"] = whatever the caller sent as "input"
-        # The frontend sends the ComfyUI node graph directly as "input"
-        prompt = event.get("input", {})
+        if not raw_input:
+            return {"success": False, "error": "No input provided"}
 
-        if not prompt:
-            return {"error": "No prompt provided in input"}
+        # Extract LoRA params (top-level, not inside the prompt)
+        lora_name = raw_input.pop("lora_name", None)
+        lora_weight = float(raw_input.pop("lora_weight", 0.8))
+        lora_url = raw_input.pop("lora_url", None)
 
-        # Pre-process: upload any base64 images to ComfyUI
-        prompt = preprocess_images(prompt)
+        # Download LoRA if URL provided
+        if lora_url and lora_name:
+            try:
+                download_lora(lora_url, lora_name)
+            except Exception as e:
+                return {"success": False, "error": f"LoRA download failed: {e}"}
 
-        # Submit prompt
-        prompt_id = queue_prompt(prompt)
+        # The remaining input is the workflow prompt
+        prompt = raw_input
 
-        # Poll for completion
-        history = poll_history(prompt_id)
+        # Process base64 images in LoadImage nodes
+        prompt = process_base64_images(prompt)
 
-        # Check for errors
-        status_info = history.get("status", {})
-        if status_info.get("status_str") == "error":
-            msgs = status_info.get("messages", [])
-            return {"error": f"ComfyUI error: {msgs}"}
+        # Inject LoRA node into workflow if requested
+        if lora_name:
+            prompt = inject_lora_into_prompt(prompt, lora_name, lora_weight)
 
-        # Collect output images
-        images = collect_outputs(history)
-
-        if not images:
-            return {"error": "No output images produced"}
-
-        return {"images": images}
+        # Run workflow
+        result = await run_workflow(prompt)
+        return result
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"success": False, "error": str(e)}
 
 
-# Start RunPod serverless worker
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    import sys
+    
+    if "--local" in sys.argv:
+        # For local testing with FastAPI
+        import uvicorn
+        from fastapi import FastAPI, Request
+        from fastapi.middleware.cors import CORSMiddleware
+        from pydantic import BaseModel
+        
+        app = FastAPI()
+        
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        
+        class InputModel(BaseModel):
+            prompt: dict
+        
+        @app.post("/runsync")
+        async def run_sync(input_data: InputModel):
+            result = await handler({"input": input_data.dict()})
+            return result
+        
+        @app.get("/health")
+        async def health():
+            return {"status": "ok", "initialized": initialized}
+        
+        print("Starting local server on port 8000...")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    else:
+        # RunPod serverless production entrypoint
+        print("Starting RunPod serverless handler...")
+        runpod.serverless.start({"handler": handler})
