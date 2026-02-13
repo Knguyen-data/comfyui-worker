@@ -34,7 +34,6 @@ async def start_comfyui():
         if initialized:
             return True
     
-            return {"success": False, "error": "ComfyUI failed to start"}
         print("Starting ComfyUI server...")
         comfyui_process = await asyncio.create_subprocess_exec(
             sys.executable, "main.py",
@@ -74,6 +73,8 @@ async def run_workflow(prompt: dict) -> dict:
     """Execute a ComfyUI workflow"""
     global comfyui_process
     
+    if not initialized:
+        if not await start_comfyui():
             return {"success": False, "error": "ComfyUI failed to start"}
     
     try:
