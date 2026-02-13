@@ -208,51 +208,72 @@ def process_base64_images(prompt: dict) -> dict:
 
 def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) -> dict:
     """Inject a LoraLoader node between the checkpoint and downstream nodes.
-    
+
     Inserts node "20" (LoraLoader) that:
-    - Takes model+clip from checkpoint node "1"
-    - Rewires KSampler "10" and CLIP nodes "7"/"8" to use LoRA outputs
-    - If IPAdapter node "5" exists, rewires its model input too
+    - Takes model+clip from checkpoint node (CheckpointLoaderSimple)
+    - Rewires KSampler and CLIP nodes to use LoRA outputs
+    - If IPAdapter node exists, rewires its model input too
     """
     prompt = dict(prompt)  # shallow copy
 
+    # 1. Find the CheckpointLoaderSimple node
+    checkpoint_node_id = None
+    for nid, node in prompt.items():
+        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple":
+            checkpoint_node_id = nid
+            break
+
+    if not checkpoint_node_id:
+        print("WARNING: No CheckpointLoaderSimple found. Skipping LoRA injection.")
+        return prompt
+
+    print(f"Injecting LoRA '{lora_name}' after checkpoint node {checkpoint_node_id}")
+
+    # 2. Create LoraLoader node
     prompt["20"] = {
         "class_type": "LoraLoader",
         "inputs": {
             "lora_name": lora_name,
             "strength_model": lora_weight,
             "strength_clip": lora_weight,
-            "model": ["1", 0],
-            "clip": ["1", 1],
+            "model": [checkpoint_node_id, 0],
+            "clip": [checkpoint_node_id, 1],
         },
     }
 
-    # Rewire CLIP text encode nodes to use LoRA clip output
-    for nid in ("7", "8"):
-        if nid in prompt:
-            node = prompt[nid]
-            if isinstance(node, dict) and "inputs" in node:
-                inputs = node["inputs"]
-                if isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "1":
+    # 3. Rewire CLIP text encode nodes to use LoRA clip output
+    for nid, node in prompt.items():
+        if not isinstance(node, dict) or "class_type" not in node:
+            continue
+
+        if node["class_type"] in ("CLIPTextEncode", "CLIPTextEncodeSDXL"):
+            inputs = node.get("inputs", {})
+            # If currently using the original checkpoint, switch to LoRA
+            if "clip" in inputs and isinstance(inputs["clip"], list):
+                if inputs["clip"][0] == checkpoint_node_id:
                     inputs["clip"] = ["20", 1]
-                # Also check for "2" (separate CLIP loader)
-                elif isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "2":
-                    pass  # keep separate CLIP loader wiring
 
-    # Rewire KSampler model input
-    if "10" in prompt:
-        ks_inputs = prompt["10"].get("inputs", {})
-        model_ref = ks_inputs.get("model")
-        # Only rewire if it currently points to checkpoint "1"
-        if isinstance(model_ref, list) and model_ref[0] == "1":
-            ks_inputs["model"] = ["20", 0]
+    # 4. Rewire KSampler model input
+    for nid, node in prompt.items():
+        if not isinstance(node, dict) or "class_type" not in node:
+            continue
 
-    # Rewire IPAdapter if present (node "5")
-    if "5" in prompt:
-        ipa_inputs = prompt["5"].get("inputs", {})
-        model_ref = ipa_inputs.get("model")
-        if isinstance(model_ref, list) and model_ref[0] == "1":
-            ipa_inputs["model"] = ["20", 0]
+        if node["class_type"] == "KSampler":
+            inputs = node.get("inputs", {})
+            if "model" in inputs and isinstance(inputs["model"], list):
+                if inputs["model"][0] == checkpoint_node_id:
+                    inputs["model"] = ["20", 0]
+
+    # 5. Rewire IPAdapter if present
+    for nid, node in prompt.items():
+        if not isinstance(node, dict) or "class_type" not in node:
+            continue
+
+        if node["class_type"] == "IPAdapter":
+            inputs = node.get("inputs", {})
+            if "model" in inputs and isinstance(inputs["model"], list):
+                if inputs["model"][0] == checkpoint_node_id:
+                    inputs["model"] = ["20", 0]
 
     return prompt
 
