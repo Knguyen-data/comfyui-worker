@@ -1,0 +1,79 @@
+name: Deploy ComfyUI Worker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      civitai_token:
+        description: 'CivitAI Token for model download'
+        required: false
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: kie1/comfyui-worker
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: comfyui-worker
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: comfyui-worker
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CIVITAI_TOKEN=${{ secrets.CIVITAI_TOKEN }}
+            LUSTIFY_MODEL_ID=2155386
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-runpod:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get image digest
+        id: image
+        run: |
+          DIGEST=$(docker manifest inspect docker.io/${{ env.IMAGE_NAME }}:latest --format '{{.manifests[0].digest}}')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$DIGEST"
+
+      - name: Notify (placeholder for RunPod deploy)
+        run: |
+          echo "✅ Build complete!"
+          echo "📦 Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo ""
+          echo "To deploy to RunPod:"
+          echo "1. Go to https://runpod.io/serverless"
+          echo "2. Create endpoint with container: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "3. Save endpoint ID"
