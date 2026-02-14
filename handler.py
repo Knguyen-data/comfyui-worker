@@ -65,8 +65,6 @@ async def start_comfyui():
         
         print("Failed to start ComfyUI within timeout")
         return False
-    
-    return True
 
 
 async def run_workflow(prompt: dict) -> dict:
@@ -114,15 +112,40 @@ async def run_workflow(prompt: dict) -> dict:
                             status_info = entry.get("status", {})
                             if status_info.get("completed", False):
                                 outputs = entry.get("outputs", {})
-                                # Extract image filenames from outputs
+                                # Extract images and encode as base64
                                 images = []
                                 for node_id, node_output in outputs.items():
                                     if "images" in node_output:
                                         for img in node_output["images"]:
+                                            filename = img["filename"]
+                                            subfolder = img.get("subfolder", "")
+                                            img_type = img.get("type", "output")
+
+                                            # Read image file from ComfyUI output directory
+                                            if subfolder:
+                                                img_path = os.path.join(COMFYUI_PATH, "output", subfolder, filename)
+                                            else:
+                                                img_path = os.path.join(COMFYUI_PATH, "output", filename)
+
+                                            img_data = ""
+                                            if os.path.exists(img_path):
+                                                import base64 as b64
+                                                with open(img_path, "rb") as img_file:
+                                                    img_data = b64.b64encode(img_file.read()).decode("utf-8")
+                                            else:
+                                                print(f"Warning: image file not found: {img_path}")
+
+                                            # Detect mime type from extension
+                                            mime = "image/png"
+                                            if filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
+                                                mime = "image/jpeg"
+                                            elif filename.lower().endswith(".webp"):
+                                                mime = "image/webp"
+
                                             images.append({
-                                                "filename": img["filename"],
-                                                "subfolder": img.get("subfolder", ""),
-                                                "type": img.get("type", "output"),
+                                                "filename": filename,
+                                                "data": img_data,
+                                                "type": mime,
                                             })
                                 return {"success": True, "outputs": outputs, "images": images}
                             elif status_info.get("status_str") == "error":

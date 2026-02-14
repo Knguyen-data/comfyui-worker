@@ -61,17 +61,13 @@ RUN mkdir -p /home/comfyui/models/checkpoints \
 # 4. t5xxl_fp16.safetensors (9.79 GB) - T5-XXL text encoder
 
 # Flux Dev UNET (gated - needs HF_TOKEN)
-RUN --mount=type=secret,id=HF_TOKEN \
-    HF_TOKEN=$(cat /run/secrets/HF_TOKEN 2>/dev/null || echo "${HF_TOKEN}") && \
-    wget --progress=bar:force:noscroll \
+RUN wget --progress=bar:force:noscroll \
     --header="Authorization: Bearer ${HF_TOKEN}" \
     -O /home/comfyui/models/unet/flux1-dev.safetensors \
     "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors"
 
 # Flux VAE (gated - same repo)
-RUN --mount=type=secret,id=HF_TOKEN \
-    HF_TOKEN=$(cat /run/secrets/HF_TOKEN 2>/dev/null || echo "${HF_TOKEN}") && \
-    wget --progress=bar:force:noscroll \
+RUN wget --progress=bar:force:noscroll \
     --header="Authorization: Bearer ${HF_TOKEN}" \
     -O /home/comfyui/models/vae/ae.safetensors \
     "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors"
