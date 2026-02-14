@@ -212,6 +212,65 @@ def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) ->
     return prompt
 
 
+async def upload_base64_images(prompt: dict) -> dict:
+    """Scan prompt for LoadImage nodes with base64 data and upload them to ComfyUI."""
+    import aiohttp
+    import base64
+
+    for node_id, node in list(prompt.items()):
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") != "LoadImage":
+            continue
+        image_val = node.get("inputs", {}).get("image", "")
+        if not isinstance(image_val, str) or len(image_val) < 200:
+            continue  # Already a filename, not base64
+
+        # Decode base64 image data
+        try:
+            # Strip data URI prefix if present
+            b64_data = image_val
+            if b64_data.startswith("data:"):
+                b64_data = b64_data.split(",", 1)[1]
+            img_bytes = base64.b64decode(b64_data)
+        except Exception as e:
+            print(f"Failed to decode base64 for node {node_id}: {e}")
+            continue
+
+        # Determine extension from magic bytes
+        ext = "jpg"
+        if img_bytes[:4] == b'\x89PNG':
+            ext = "png"
+        elif img_bytes[:4] == b'RIFF':
+            ext = "webp"
+
+        filename = f"upload_{node_id}_{int(time.time())}.{ext}"
+
+        # Upload to ComfyUI via /upload/image API
+        try:
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field('image', img_bytes, filename=filename,
+                               content_type=f'image/{ext}')
+                async with session.post(
+                    "http://127.0.0.1:8188/upload/image",
+                    data=form,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        uploaded_name = result.get("name", filename)
+                        node["inputs"]["image"] = uploaded_name
+                        print(f"Uploaded base64 image for node {node_id} -> {uploaded_name}")
+                    else:
+                        error = await resp.text()
+                        print(f"Upload failed for node {node_id}: {error}")
+        except Exception as e:
+            print(f"Failed to upload image for node {node_id}: {e}")
+
+    return prompt
+
+
 async def handler(event: dict) -> dict:
     """Main handler for RunPod.
     
@@ -240,6 +299,9 @@ async def handler(event: dict) -> dict:
 
         # The remaining input is the workflow prompt
         prompt = raw_input
+
+        # Upload any base64 images embedded in LoadImage nodes
+        prompt = await upload_base64_images(prompt)
 
         # Inject LoRA node into workflow if requested
         if lora_name:
