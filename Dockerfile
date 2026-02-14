@@ -1,5 +1,9 @@
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
+# HuggingFace token for gated model downloads (Flux Dev)
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -42,32 +46,57 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git . && \
 
 # Create models directories
 RUN mkdir -p /home/comfyui/models/checkpoints \
+             /home/comfyui/models/unet \
+             /home/comfyui/models/clip \
+             /home/comfyui/models/vae \
              /home/comfyui/models/loras \
              /home/comfyui/models/upscale_models \
              /home/comfyui/models/ipadapter \
              /home/comfyui/models/clip_vision
 
-# Download IPAdapter models (ARG only, not exposed as ENV)
-ENV CIVITAI_TOKEN=715db9acbf5c71d8c82fc7cfc8ce2529
+# Download Flux Dev model files
+# 1. flux1-dev.safetensors (23.8 GB) - UNET, gated model
+# 2. ae.safetensors (335 MB) - VAE
+# 3. clip_l.safetensors (246 MB) - CLIP-L text encoder
+# 4. t5xxl_fp16.safetensors (9.79 GB) - T5-XXL text encoder
 
-RUN echo "Downloading IPAdapter FaceID..." && \
+# Flux Dev UNET (gated - needs HF_TOKEN)
+RUN --mount=type=secret,id=HF_TOKEN \
+    HF_TOKEN=$(cat /run/secrets/HF_TOKEN 2>/dev/null || echo "${HF_TOKEN}") && \
+    wget --progress=bar:force:noscroll \
+    --header="Authorization: Bearer ${HF_TOKEN}" \
+    -O /home/comfyui/models/unet/flux1-dev.safetensors \
+    "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors"
+
+# Flux VAE (gated - same repo)
+RUN --mount=type=secret,id=HF_TOKEN \
+    HF_TOKEN=$(cat /run/secrets/HF_TOKEN 2>/dev/null || echo "${HF_TOKEN}") && \
+    wget --progress=bar:force:noscroll \
+    --header="Authorization: Bearer ${HF_TOKEN}" \
+    -O /home/comfyui/models/vae/ae.safetensors \
+    "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors"
+
+# CLIP-L and T5-XXL text encoders (public, no auth needed)
+RUN wget --progress=bar:force:noscroll \
+    -O /home/comfyui/models/clip/clip_l.safetensors \
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors" && \
+    wget --progress=bar:force:noscroll \
+    -O /home/comfyui/models/clip/t5xxl_fp16.safetensors \
+    "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors"
+
+# Download IPAdapter models for face reference
+ARG CIVITAI_TOKEN
+ENV CIVITAI_TOKEN=${CIVITAI_TOKEN}
+RUN if [ -n "${CIVITAI_TOKEN}" ]; then \
+    echo "Downloading IPAdapter FaceID..." && \
     curl -L -o /home/comfyui/models/ipadapter/ip-adapter-faceid_sdxl.bin \
-        "https://civitai.com/api/download/models/215861?token=715db9acbf5c71d8c82fc7cfc8ce2529" && \
+        "https://civitai.com/api/download/models/215861?token=${CIVITAI_TOKEN}" && \
     echo "Downloading CLIP Vision..." && \
     curl -L -o /home/comfyui/models/clip_vision/CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors \
-        "https://civitai.com/api/download/models/212354?token=715db9acbf5c71d8c82fc7cfc8ce2529" && \
-    echo "Downloading IPAdapter Plus..." && \
-    curl -L -o /home/comfyui/models/ipadapter/ip-adapter-plus_sdxl_vit-h.safetensors \
-        "https://civitai.com/api/download/models/247653?token=715db9acbf5c71d8c82fc7cfc8ce2529"
+        "https://civitai.com/api/download/models/212354?token=${CIVITAI_TOKEN}"; \
+    else echo "Skipping IPAdapter (no CIVITAI_TOKEN)"; fi
 
-# Download Lustify V7 (NSFW)
-ARG LUSTIFY_MODEL_ID=2155386
-RUN echo "Downloading Lustify SDXL V7..." && \
-    curl -L -o /home/comfyui/models/checkpoints/lustifySDXLNSFW_ggwpV7.safetensors \
-        "https://civitai.com/api/download/models/${LUSTIFY_MODEL_ID}?token=715db9acbf5c71d8c82fc7cfc8ce2529"
-
-# Install custom nodes (only IPAdapter Plus needed for this workflow)
-# Clean any broken custom nodes first
+# Install custom nodes (IPAdapter Plus for face reference workflow)
 RUN rm -rf /home/comfyui/custom_nodes/* && \
     mkdir -p /home/comfyui/custom_nodes && \
     git clone --depth 1 https://github.com/cubiq/ComfyUI_IPAdapter_plus.git /home/comfyui/custom_nodes/ComfyUI_IPAdapter_plus && \
@@ -75,9 +104,8 @@ RUN rm -rf /home/comfyui/custom_nodes/* && \
     pip install --no-cache-dir -r requirements.txt || true && \
     cd /home/comfyui
 
-# Copy workflow and handler
+# Copy handler
 COPY handler.py /home/comfyui/handler.py
-COPY workflow.json /home/comfyui/workflow.json
 
 WORKDIR /home/comfyui
 
