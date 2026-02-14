@@ -162,14 +162,24 @@ def download_lora(url: str, filename: str) -> str:
 
 
 def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) -> dict:
-    """Inject a LoraLoader node between the checkpoint and downstream nodes.
-    
-    Inserts node "20" (LoraLoader) that:
-    - Takes model+clip from checkpoint node "1"
-    - Rewires KSampler "10" and CLIP nodes "7"/"8" to use LoRA outputs
-    - If IPAdapter node "5" exists, rewires its model input too
+    """Inject a LoraLoader node between model/clip loaders and downstream nodes.
+
+    Supports Flux Dev workflow:
+    - UNETLoader "1" provides MODEL[0]
+    - DualCLIPLoader "2" provides CLIP[0]
+
+    Inserts node "20" (LoraLoader) that takes model+clip and rewires
+    KSampler "10", CLIP nodes "7"/"8", and IPAdapter "33" if present.
     """
     prompt = dict(prompt)  # shallow copy
+
+    # Detect model and clip source nodes
+    model_src = ["1", 0]  # UNETLoader or CheckpointLoaderSimple
+    clip_src = ["2", 0]   # DualCLIPLoader for Flux
+
+    # Fallback: if no node "2", CLIP comes from checkpoint "1"
+    if "2" not in prompt:
+        clip_src = ["1", 1]
 
     prompt["20"] = {
         "class_type": "LoraLoader",
@@ -177,8 +187,8 @@ def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) ->
             "lora_name": lora_name,
             "strength_model": lora_weight,
             "strength_clip": lora_weight,
-            "model": ["1", 0],
-            "clip": ["1", 1],
+            "model": model_src,
+            "clip": clip_src,
         },
     }
 
@@ -188,26 +198,25 @@ def inject_lora_into_prompt(prompt: dict, lora_name: str, lora_weight: float) ->
             node = prompt[nid]
             if isinstance(node, dict) and "inputs" in node:
                 inputs = node["inputs"]
-                if isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "1":
-                    inputs["clip"] = ["20", 1]
-                # Also check for "2" (separate CLIP loader)
-                elif isinstance(inputs.get("clip"), list) and inputs["clip"][0] == "2":
-                    pass  # keep separate CLIP loader wiring
+                if isinstance(inputs.get("clip"), list):
+                    src = inputs["clip"][0]
+                    if src == model_src[0] or src == clip_src[0]:
+                        inputs["clip"] = ["20", 1]
 
     # Rewire KSampler model input
     if "10" in prompt:
         ks_inputs = prompt["10"].get("inputs", {})
         model_ref = ks_inputs.get("model")
-        # Only rewire if it currently points to checkpoint "1"
-        if isinstance(model_ref, list) and model_ref[0] == "1":
+        if isinstance(model_ref, list) and model_ref[0] == model_src[0]:
             ks_inputs["model"] = ["20", 0]
 
-    # Rewire IPAdapter if present (node "5")
-    if "5" in prompt:
-        ipa_inputs = prompt["5"].get("inputs", {})
-        model_ref = ipa_inputs.get("model")
-        if isinstance(model_ref, list) and model_ref[0] == "1":
-            ipa_inputs["model"] = ["20", 0]
+    # Rewire IPAdapter if present (node "33" for Flux, "5" for legacy)
+    for ipa_nid in ("33", "5"):
+        if ipa_nid in prompt:
+            ipa_inputs = prompt[ipa_nid].get("inputs", {})
+            model_ref = ipa_inputs.get("model")
+            if isinstance(model_ref, list) and model_ref[0] == model_src[0]:
+                ipa_inputs["model"] = ["20", 0]
 
     return prompt
 
