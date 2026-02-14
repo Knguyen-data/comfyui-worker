@@ -101,22 +101,34 @@ async def run_workflow(prompt: dict) -> dict:
             if time.time() - poll_start > poll_timeout:
                 return {"success": False, "error": "Polling timeout exceeded (600s)"}
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"http://127.0.0.1:8188/api/prompt_status/{prompt_id}",
+                    f"http://127.0.0.1:8188/history/{prompt_id}",
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
-                        status = await resp.json()
-                        if status["status"] == "success":
-                            outputs = status["outputs"]
-                            return {"success": True, "outputs": outputs}
-                        elif status["status"] == "failed":
-                            error_msg = status.get("error", "Unknown error")
-                            return {"success": False, "error": error_msg}
-                    elif resp.status != 404:
-                        raise Exception(f"Status check failed: {resp.status}")
+                        history = await resp.json()
+                        if prompt_id in history:
+                            entry = history[prompt_id]
+                            status_info = entry.get("status", {})
+                            if status_info.get("completed", False):
+                                outputs = entry.get("outputs", {})
+                                # Extract image filenames from outputs
+                                images = []
+                                for node_id, node_output in outputs.items():
+                                    if "images" in node_output:
+                                        for img in node_output["images"]:
+                                            images.append({
+                                                "filename": img["filename"],
+                                                "subfolder": img.get("subfolder", ""),
+                                                "type": img.get("type", "output"),
+                                            })
+                                return {"success": True, "outputs": outputs, "images": images}
+                            elif status_info.get("status_str") == "error":
+                                msgs = entry.get("status", {}).get("messages", [])
+                                error_msg = str(msgs) if msgs else "Workflow execution failed"
+                                return {"success": False, "error": error_msg}
         
     except Exception as e:
         return {"success": False, "error": str(e)}
